@@ -244,24 +244,10 @@ export default function ApprovalsPage() {
           .eq('id', selectedItem.id)
         if (error) throw error
 
-        // Side effects on column status after final approval
-        if (nextStatus === 'approved') {
-          if (selectedItem.table === 'column_qualification') {
-            const { error: colErr } = await supabase.from('columns').update({ status: 'active' }).eq('id', selectedItem.column_id)
-            if (colErr) throw colErr
-          } else if (selectedItem.table === 'column_discard') {
-            const { error: colErr } = await supabase.from('columns').update({ status: 'discarded' }).eq('id', selectedItem.column_id)
-            if (colErr) throw colErr
-          } else if (selectedItem.table === 'column_transfers') {
-            const { error: colErr } = await supabase.from('columns').update({ status: 'transferred' }).eq('id', selectedItem.column_id)
-            if (colErr) throw colErr
-          }
-        } else if (nextStatus === 'rejected') {
-          if (selectedItem.table === 'column_qualification') {
-            const { error: colErr } = await supabase.from('columns').update({ status: 'qualification_pending' }).eq('id', selectedItem.column_id)
-            if (colErr) throw colErr
-          }
-        }
+        // NOTE: Column status side-effects are handled by DB triggers (sync_column_status_on_approval).
+        // The trigger fires on UPDATE to approval tables and runs as SECURITY DEFINER,
+        // so it bypasses RLS and is guaranteed to execute atomically with the approval update.
+        // No frontend status updates needed here.
       }
 
       toast.success(`${action === 'approved' ? 'Approved' : 'Rejected'} successfully`)

@@ -100,12 +100,9 @@ export default function IssuancePage() {
 
       if (error) throw error
 
-      // Update column assignment
-      await supabase.from('columns').update({
-        assigned_analyst_id: data.issued_to,
-        assigned_product: data.product_name,
-        assigned_method: data.method_reference,
-      }).eq('id', data.column_id)
+      // NOTE: Column assignment fields (analyst, product, method) are updated
+      // by the DB trigger sync_column_assignment_on_issuance_approval
+      // only AFTER QA gives final approval — not at submission time.
 
       toast.success('Column issuance submitted for QC Head approval')
       reset()

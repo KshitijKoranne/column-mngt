@@ -120,7 +120,8 @@ export default function RegenerationPage() {
       if (error) throw error
 
       // Update column status to regeneration
-      await supabase.from('columns').update({ status: 'regeneration' }).eq('id', columnId)
+      const { error: statusErr } = await supabase.from('columns').update({ status: 'regeneration' }).eq('id', columnId)
+      if (statusErr) throw statusErr
 
       toast.success('Regeneration initiated and submitted for approval')
       router.push(`/columns/${columnId}`)
@@ -166,19 +167,15 @@ export default function RegenerationPage() {
       if (outcome === 'returned_to_service') {
         toast.success('Post-regeneration SST passed. Submitted for return-to-service approval.')
       } else {
-        // SST failed — create a discard record and go through approval chain
+        // SST failed — auto-raise discard via RPC (bypasses RLS since analyst cannot insert discard directly)
         toast.warning('Post-regeneration SST failed. Discard request raised for approval.')
-        await supabase.from('column_discard').insert({
-          column_id: columnId,
-          discard_reason: 'sst_failure_post_regen',
-          reason_details: `Post-regeneration SST failed. ${data.remarks}`,
-          cumulative_injections_at_discard: column?.cumulative_injections ?? 0,
-          initiated_by: userId,
-          approval_status: 'pending_supervisor',
-          approval_chain: {
-            analyst: { user_id: userId, action: 'submitted', timestamp: nowISO(), remarks: data.remarks },
-          },
+        const { error: discardErr } = await supabase.rpc('auto_raise_discard_on_sst_failure', {
+          p_column_id: columnId,
+          p_initiated_by: userId,
+          p_reason_details: `Post-regeneration SST failed. ${data.remarks || ''}`,
+          p_cumulative_injections: column?.cumulative_injections ?? 0,
         })
+        if (discardErr) throw discardErr
         // Column stays in 'regeneration' status until discard is approved
       }
 

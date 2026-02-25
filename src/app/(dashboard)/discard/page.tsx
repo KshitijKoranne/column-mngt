@@ -98,7 +98,8 @@ export default function DiscardPage() {
         cumulative_injections_at_discard: selectedCol.cumulative_injections,
         destruction_method: formData.destruction_method || null,
         initiated_by: userId,
-        approval_status: 'pending_supervisor',
+        // QC Head is the initiator — skip supervisor & qc_head steps, go straight to QA
+        approval_status: 'pending_qa',
         approval_chain: approvalChain,
       })
 

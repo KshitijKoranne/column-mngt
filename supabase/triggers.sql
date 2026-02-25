@@ -221,3 +221,153 @@ CREATE TRIGGER trg_sync_status_on_discard_approval
 CREATE TRIGGER trg_sync_status_on_transfer_approval
   AFTER UPDATE ON public.column_transfers
   FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+-- ============================================================
+-- FIX 5: Regeneration approval → column back to 'active'
+-- FIX 6: Transfer approval → update actual column fields
+-- FIX 4: Issuance approval → update column assignment fields
+-- Added to sync_column_status_on_approval function (replace it)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.sync_column_status_on_approval()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Only act when approval_status changes TO 'approved'
+  IF NEW.approval_status = 'approved' AND OLD.approval_status != 'approved' THEN
+
+    IF TG_TABLE_NAME = 'column_qualification' THEN
+      UPDATE public.columns
+      SET status = 'active', updated_at = NOW()
+      WHERE id = NEW.column_id AND status = 'qualification_pending';
+
+    ELSIF TG_TABLE_NAME = 'column_discard' THEN
+      UPDATE public.columns
+      SET status = 'discarded', updated_at = NOW()
+      WHERE id = NEW.column_id;
+
+    ELSIF TG_TABLE_NAME = 'column_transfers' THEN
+      -- FIX 6: Update actual column fields based on transfer type + to_value
+      UPDATE public.columns
+      SET
+        status = 'active', -- stays active after transfer, not 'transferred'
+        assigned_product = CASE WHEN NEW.transfer_type = 'product' THEN NEW.to_value ELSE assigned_product END,
+        assigned_method  = CASE WHEN NEW.transfer_type = 'method'  THEN NEW.to_value ELSE assigned_method END,
+        storage_location = CASE WHEN NEW.transfer_type = 'location' THEN NEW.to_value ELSE storage_location END,
+        assigned_analyst_id = CASE
+          WHEN NEW.transfer_type = 'analyst' THEN (
+            SELECT id FROM public.profiles WHERE full_name = NEW.to_value LIMIT 1
+          )
+          ELSE assigned_analyst_id
+        END,
+        updated_at = NOW()
+      WHERE id = NEW.column_id;
+
+    ELSIF TG_TABLE_NAME = 'column_regeneration' THEN
+      -- FIX 5: Regeneration approved (returned_to_service) → column back to active
+      IF NEW.outcome = 'returned_to_service' THEN
+        UPDATE public.columns
+        SET status = 'active', updated_at = NOW()
+        WHERE id = NEW.column_id AND status = 'regeneration';
+      END IF;
+
+    ELSIF TG_TABLE_NAME = 'column_issuance' THEN
+      -- FIX 4: Issuance approved → now update column assignment fields
+      UPDATE public.columns
+      SET
+        assigned_analyst_id = NEW.issued_to,
+        assigned_product    = NEW.product_name,
+        assigned_method     = NEW.method_reference,
+        updated_at = NOW()
+      WHERE id = NEW.column_id;
+
+    END IF;
+  END IF;
+
+  -- Handle rejections
+  IF NEW.approval_status = 'rejected' AND OLD.approval_status != 'rejected' THEN
+    IF TG_TABLE_NAME = 'column_qualification' THEN
+      UPDATE public.columns
+      SET status = 'qualification_pending', updated_at = NOW()
+      WHERE id = NEW.column_id;
+    ELSIF TG_TABLE_NAME = 'column_regeneration' THEN
+      -- Regeneration rejected → revert to active
+      UPDATE public.columns
+      SET status = 'active', updated_at = NOW()
+      WHERE id = NEW.column_id AND status = 'regeneration';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Re-attach triggers (DROP IF EXISTS first to avoid duplicates)
+DROP TRIGGER IF EXISTS trg_sync_status_on_qual_approval ON public.column_qualification;
+DROP TRIGGER IF EXISTS trg_sync_status_on_discard_approval ON public.column_discard;
+DROP TRIGGER IF EXISTS trg_sync_status_on_transfer_approval ON public.column_transfers;
+DROP TRIGGER IF EXISTS trg_sync_status_on_regen_approval ON public.column_regeneration;
+DROP TRIGGER IF EXISTS trg_sync_status_on_issuance_approval ON public.column_issuance;
+
+CREATE TRIGGER trg_sync_status_on_qual_approval
+  AFTER UPDATE ON public.column_qualification
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+CREATE TRIGGER trg_sync_status_on_discard_approval
+  AFTER UPDATE ON public.column_discard
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+CREATE TRIGGER trg_sync_status_on_transfer_approval
+  AFTER UPDATE ON public.column_transfers
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+CREATE TRIGGER trg_sync_status_on_regen_approval
+  AFTER UPDATE ON public.column_regeneration
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+CREATE TRIGGER trg_sync_status_on_issuance_approval
+  AFTER UPDATE ON public.column_issuance
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+-- ============================================================
+-- FIX 2+7: RPC for auto-discard when post-regen SST fails
+-- Analyst cannot INSERT into column_discard (RLS blocks it)
+-- This SECURITY DEFINER function bypasses that restriction
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.auto_raise_discard_on_sst_failure(
+  p_column_id UUID,
+  p_initiated_by UUID,
+  p_reason_details TEXT,
+  p_cumulative_injections INTEGER
+)
+RETURNS VOID AS $$
+BEGIN
+  INSERT INTO public.column_discard (
+    column_id,
+    discard_reason,
+    reason_details,
+    cumulative_injections_at_discard,
+    initiated_by,
+    approval_status,
+    approval_chain
+  ) VALUES (
+    p_column_id,
+    'sst_failure_post_regen',
+    p_reason_details,
+    p_cumulative_injections,
+    p_initiated_by,
+    'pending_supervisor',
+    jsonb_build_object(
+      'analyst', jsonb_build_object(
+        'user_id', p_initiated_by::text,
+        'action', 'submitted',
+        'timestamp', NOW()::text,
+        'remarks', p_reason_details
+      )
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Grant execute permission to authenticated users
+GRANT EXECUTE ON FUNCTION public.auto_raise_discard_on_sst_failure(UUID, UUID, TEXT, INTEGER) TO authenticated;

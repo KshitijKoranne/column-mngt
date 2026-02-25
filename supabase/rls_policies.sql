@@ -260,3 +260,19 @@ ALTER TABLE public.column_regeneration FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.column_transfers FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.column_discard FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_log FORCE ROW LEVEL SECURITY;
+
+-- ============================================================
+-- FIX: Discard approval_status starts at pending_qa when 
+-- initiated by QC Head (supervisor/qc_head steps skipped).
+-- Update the approvals page fetchPending to also query
+-- pending_qa for discard items when role is qa.
+-- (No RLS change needed for this — handled in app logic)
+
+-- FIX: Allow auto_raise_discard_on_sst_failure RPC to insert
+-- discard records. The function is SECURITY DEFINER so it runs
+-- as the function owner (bypasses RLS). No policy change needed.
+
+-- FIX: Discard page QA approval — QA updates column_discard
+-- approval_status which is already covered by discard_update policy.
+-- No change needed.
+-- ============================================================
