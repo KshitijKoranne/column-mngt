@@ -10,7 +10,7 @@ export const NAV_ITEMS: {
   { href: '/dashboard',     label: 'Dashboard',       icon: 'LayoutDashboard', roles: ['analyst', 'supervisor', 'qc_head', 'qa'] },
   { href: '/columns',       label: 'Column Inventory', icon: 'FlaskConical',    roles: ['analyst', 'supervisor', 'qc_head', 'qa'] },
   { href: '/columns/new',   label: 'Register Column',  icon: 'Plus',            roles: ['analyst', 'supervisor', 'qc_head'] },
-  { href: '/usage/new',     label: 'Log Usage',        icon: 'ClipboardList',   roles: ['analyst', 'supervisor', 'qc_head'] },
+  { href: '/usage/new',     label: 'Log Usage',        icon: 'ClipboardList',   roles: ['analyst'] },
   { href: '/approvals',     label: 'Approvals',        icon: 'CheckSquare',     roles: ['supervisor', 'qc_head', 'qa'] },
   { href: '/column-types',  label: 'Column Types',     icon: 'Tag',             roles: ['qc_head'] },
   { href: '/users',         label: 'User Management',  icon: 'Users',           roles: ['qc_head'] },

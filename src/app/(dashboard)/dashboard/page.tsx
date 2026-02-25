@@ -1,4 +1,6 @@
 import { redirect } from 'next/navigation'
+
+export const revalidate = 0  // Never cache — always fetch fresh data
 import { createClient } from '@/lib/supabase/server'
 import {
   FlaskConical, Activity, CheckCircle2, AlertTriangle, ArchiveX, Package,
@@ -30,22 +32,25 @@ export default async function DashboardPage() {
     received: allCols.filter(c => c.status === 'received').length,
   }
 
-  // Pending approvals count by role
-  const { data: pendingReceipts } = await supabase
-    .from('columns')
-    .select('id')
-    .eq('receipt_approval_status', profile.role === 'supervisor' ? 'pending_supervisor'
-      : profile.role === 'qc_head' ? 'pending_qc_head'
-      : profile.role === 'qa' ? 'pending_qa' : 'none')
+  // Pending approvals count by role — checks ALL approval tables
+  const roleStatus =
+    profile.role === 'supervisor' ? 'pending_supervisor' :
+    profile.role === 'qc_head'   ? 'pending_qc_head' :
+    profile.role === 'qa'        ? 'pending_qa' : 'none'
 
-  const { data: pendingQuals } = await supabase
-    .from('column_qualification')
-    .select('id')
-    .eq('approval_status', profile.role === 'supervisor' ? 'pending_supervisor'
-      : profile.role === 'qc_head' ? 'pending_qc_head'
-      : profile.role === 'qa' ? 'pending_qa' : 'none')
-
-  const totalPending = (pendingReceipts?.length || 0) + (pendingQuals?.length || 0)
+  let totalPending = 0
+  if (roleStatus !== 'none') {
+    const [receipts, quals, regens, transfers, discards, issuances] = await Promise.all([
+      supabase.from('columns').select('id', { count: 'exact', head: true }).eq('receipt_approval_status', roleStatus),
+      supabase.from('column_qualification').select('id', { count: 'exact', head: true }).eq('approval_status', roleStatus),
+      supabase.from('column_regeneration').select('id', { count: 'exact', head: true }).eq('approval_status', roleStatus),
+      supabase.from('column_transfers').select('id', { count: 'exact', head: true }).eq('approval_status', roleStatus),
+      supabase.from('column_discard').select('id', { count: 'exact', head: true }).eq('approval_status', roleStatus),
+      supabase.from('column_issuance').select('id', { count: 'exact', head: true }).eq('approval_status', roleStatus),
+    ])
+    totalPending = (receipts.count || 0) + (quals.count || 0) + (regens.count || 0) +
+                   (transfers.count || 0) + (discards.count || 0) + (issuances.count || 0)
+  }
 
   // My assigned columns (for analyst)
   const myColumns = profile.role === 'analyst'

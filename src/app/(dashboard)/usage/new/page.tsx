@@ -26,6 +26,7 @@ export default function UsageLogPage() {
   const [loading, setLoading] = useState(false)
   const [userId, setUserId] = useState('')
   const [assignedColumns, setAssignedColumns] = useState<Column[]>([])
+  const [userRole, setUserRole] = useState('')
   const [showSSTAlert, setShowSSTAlert] = useState(false)
   const [newRegenId, setNewRegenId] = useState<string | null>(null)
 
@@ -48,6 +49,9 @@ export default function UsageLogPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
       setUserId(user.id)
+
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+      if (profile) setUserRole(profile.role)
 
       const { data: cols } = await supabase
         .from('columns')
@@ -107,6 +111,15 @@ export default function UsageLogPage() {
   const handleInitiateRegen = () => {
     const columnId = watch('column_id')
     if (columnId) router.push(`/regeneration/${columnId}`)
+  }
+
+  if (userRole && userRole !== 'analyst') {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-bold text-gray-900">Log Usage Session</h1>
+        <p className="text-gray-500 mt-2">Usage logging is performed by analysts only.</p>
+      </div>
+    )
   }
 
   return (
