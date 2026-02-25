@@ -161,3 +161,63 @@ BEGIN
   PERFORM set_config('app.ip_address', p_ip,      true);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================
+-- FUNCTION: Automatically update column status when approval
+-- chain reaches final 'approved' state
+-- This is more reliable than doing it from the frontend,
+-- as it runs server-side with SECURITY DEFINER (bypasses RLS)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.sync_column_status_on_approval()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Only act when approval_status changes TO 'approved'
+  IF NEW.approval_status = 'approved' AND OLD.approval_status != 'approved' THEN
+
+    -- column_qualification approved → column becomes active
+    IF TG_TABLE_NAME = 'column_qualification' THEN
+      UPDATE public.columns
+      SET status = 'active', updated_at = NOW()
+      WHERE id = NEW.column_id AND status = 'qualification_pending';
+
+    -- column_discard approved → column becomes discarded
+    ELSIF TG_TABLE_NAME = 'column_discard' THEN
+      UPDATE public.columns
+      SET status = 'discarded', updated_at = NOW()
+      WHERE id = NEW.column_id;
+
+    -- column_transfers approved → column becomes transferred
+    ELSIF TG_TABLE_NAME = 'column_transfers' THEN
+      UPDATE public.columns
+      SET status = 'transferred', updated_at = NOW()
+      WHERE id = NEW.column_id;
+
+    END IF;
+  END IF;
+
+  -- Also handle rejection of qualification → revert to qualification_pending
+  IF NEW.approval_status = 'rejected' AND OLD.approval_status != 'rejected' THEN
+    IF TG_TABLE_NAME = 'column_qualification' THEN
+      UPDATE public.columns
+      SET status = 'qualification_pending', updated_at = NOW()
+      WHERE id = NEW.column_id;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Apply trigger to all approval tables
+CREATE TRIGGER trg_sync_status_on_qual_approval
+  AFTER UPDATE ON public.column_qualification
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+CREATE TRIGGER trg_sync_status_on_discard_approval
+  AFTER UPDATE ON public.column_discard
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
+
+CREATE TRIGGER trg_sync_status_on_transfer_approval
+  AFTER UPDATE ON public.column_transfers
+  FOR EACH ROW EXECUTE FUNCTION public.sync_column_status_on_approval();
