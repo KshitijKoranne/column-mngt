@@ -85,13 +85,14 @@ CREATE POLICY "columns_insert_analyst_supervisor_head"
   TO authenticated
   WITH CHECK (public.get_user_role() IN ('analyst', 'supervisor', 'qc_head'));
 
--- Supervisor, QC Head can update columns (status changes, approvals)
--- QA cannot update (read-only)
+-- Supervisor, QC Head, and QA can update columns (status changes, approvals)
+-- QA needs UPDATE to write their approval step to receipt_approval_chain and receipt_approval_status
+-- Analysts can update only columns they registered (to support initial submission flow)
 CREATE POLICY "columns_update_non_qa"
   ON public.columns FOR UPDATE
   TO authenticated
-  USING (public.get_user_role() IN ('analyst', 'supervisor', 'qc_head'))
-  WITH CHECK (public.get_user_role() IN ('analyst', 'supervisor', 'qc_head'));
+  USING (public.get_user_role() IN ('analyst', 'supervisor', 'qc_head', 'qa'))
+  WITH CHECK (public.get_user_role() IN ('analyst', 'supervisor', 'qc_head', 'qa'));
 
 -- No hard deletes
 -- (no DELETE policy = no one can delete)

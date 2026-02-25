@@ -216,53 +216,62 @@ export default function ApprovalsPage() {
       userRole === 'qc_head'   ? 'pending_qa' :
       userRole === 'qa'        ? 'approved' : 'rejected'
 
-    // Map table to update query
-    if (selectedItem.table === 'columns') {
-      const updates: any = { receipt_approval_chain: newChain, receipt_approval_status: nextStatus }
-      if (nextStatus === 'approved') {
-        updates.status = 'qualification_pending'
-      } else if (nextStatus === 'rejected') {
-        updates.status = 'rejected'
-      }
-      const { error } = await supabase.from('columns').update(updates).eq('id', selectedItem.id)
-      if (error) throw error
-    } else {
-      const tableMap: Record<string, string> = {
-        column_qualification: 'column_qualification',
-        column_regeneration: 'column_regeneration',
-        column_transfers: 'column_transfers',
-        column_discard: 'column_discard',
-        column_issuance: 'column_issuance',
-      }
-      const tbl = tableMap[selectedItem.table]
-      if (!tbl) throw new Error('Unknown table')
-
-      const { error } = await supabase
-        .from(tbl)
-        .update({ approval_chain: newChain, approval_status: nextStatus })
-        .eq('id', selectedItem.id)
-      if (error) throw error
-
-      // Side effects on column status after final approval
-      if (nextStatus === 'approved') {
-        if (selectedItem.table === 'column_qualification') {
-          await supabase.from('columns').update({ status: 'active' }).eq('id', selectedItem.column_id)
-        } else if (selectedItem.table === 'column_discard') {
-          await supabase.from('columns').update({ status: 'discarded' }).eq('id', selectedItem.column_id)
-        } else if (selectedItem.table === 'column_transfers') {
-          await supabase.from('columns').update({ status: 'transferred' }).eq('id', selectedItem.column_id)
+    try {
+      // Map table to update query
+      if (selectedItem.table === 'columns') {
+        const updates: any = { receipt_approval_chain: newChain, receipt_approval_status: nextStatus }
+        if (nextStatus === 'approved') {
+          updates.status = 'qualification_pending'
+        } else if (nextStatus === 'rejected') {
+          updates.status = 'rejected'
         }
-      } else if (nextStatus === 'rejected') {
-        if (selectedItem.table === 'column_qualification') {
-          await supabase.from('columns').update({ status: 'qualification_pending' }).eq('id', selectedItem.column_id)
+        const { error } = await supabase.from('columns').update(updates).eq('id', selectedItem.id)
+        if (error) throw error
+      } else {
+        const tableMap: Record<string, string> = {
+          column_qualification: 'column_qualification',
+          column_regeneration: 'column_regeneration',
+          column_transfers: 'column_transfers',
+          column_discard: 'column_discard',
+          column_issuance: 'column_issuance',
+        }
+        const tbl = tableMap[selectedItem.table]
+        if (!tbl) throw new Error('Unknown table')
+
+        const { error } = await supabase
+          .from(tbl)
+          .update({ approval_chain: newChain, approval_status: nextStatus })
+          .eq('id', selectedItem.id)
+        if (error) throw error
+
+        // Side effects on column status after final approval
+        if (nextStatus === 'approved') {
+          if (selectedItem.table === 'column_qualification') {
+            const { error: colErr } = await supabase.from('columns').update({ status: 'active' }).eq('id', selectedItem.column_id)
+            if (colErr) throw colErr
+          } else if (selectedItem.table === 'column_discard') {
+            const { error: colErr } = await supabase.from('columns').update({ status: 'discarded' }).eq('id', selectedItem.column_id)
+            if (colErr) throw colErr
+          } else if (selectedItem.table === 'column_transfers') {
+            const { error: colErr } = await supabase.from('columns').update({ status: 'transferred' }).eq('id', selectedItem.column_id)
+            if (colErr) throw colErr
+          }
+        } else if (nextStatus === 'rejected') {
+          if (selectedItem.table === 'column_qualification') {
+            const { error: colErr } = await supabase.from('columns').update({ status: 'qualification_pending' }).eq('id', selectedItem.column_id)
+            if (colErr) throw colErr
+          }
         }
       }
+
+      toast.success(`${action === 'approved' ? 'Approved' : 'Rejected'} successfully`)
+      setPendingItems(prev => prev.filter(i => i.id !== selectedItem.id))
+      setSelectedItem(null)
+      setModalOpen(false)
+    } catch (err: any) {
+      console.error('Approval error:', err)
+      toast.error(`Action failed: ${err?.message || 'Permission denied or database error. Please contact your administrator.'}`)
     }
-
-    toast.success(`${action === 'approved' ? 'Approved' : 'Rejected'} successfully`)
-    setPendingItems(prev => prev.filter(i => i.id !== selectedItem.id))
-    setSelectedItem(null)
-    setModalOpen(false)
   }
 
   if (userRole === 'analyst') {
