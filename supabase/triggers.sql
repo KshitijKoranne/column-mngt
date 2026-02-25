@@ -1,0 +1,163 @@
+-- ============================================================
+-- AUDIT TRIGGERS - GMP Compliance
+-- Captures every INSERT, UPDATE, DELETE with old/new values
+-- ============================================================
+
+-- The audit trigger function reads context variables set by the application
+-- The app must call: SET LOCAL app.user_id = '<uuid>';
+--                    SET LOCAL app.session_id = '<session>';
+--                    SET LOCAL app.ip_address = '<ip>';
+-- before each DML statement via a Supabase RPC wrapper.
+-- For Supabase, we use the auth.uid() function when available.
+
+CREATE OR REPLACE FUNCTION public.audit_trigger_fn()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_user_id   UUID;
+  v_session   TEXT;
+  v_ip        TEXT;
+  v_record_id UUID;
+BEGIN
+  -- Try to get user context from session settings or auth
+  BEGIN
+    v_user_id := current_setting('app.user_id', true)::UUID;
+  EXCEPTION WHEN OTHERS THEN
+    v_user_id := auth.uid();
+  END;
+
+  v_session := current_setting('app.session_id', true);
+  v_ip      := current_setting('app.ip_address', true);
+
+  IF TG_OP = 'DELETE' THEN
+    v_record_id := OLD.id;
+    INSERT INTO public.audit_log (table_name, record_id, action, changed_by, old_values, new_values, ip_address, session_id)
+    VALUES (TG_TABLE_NAME, v_record_id, 'DELETE', v_user_id, to_jsonb(OLD), NULL, v_ip, v_session);
+    RETURN OLD;
+  ELSIF TG_OP = 'UPDATE' THEN
+    v_record_id := NEW.id;
+    INSERT INTO public.audit_log (table_name, record_id, action, changed_by, old_values, new_values, ip_address, session_id)
+    VALUES (TG_TABLE_NAME, v_record_id, 'UPDATE', v_user_id, to_jsonb(OLD), to_jsonb(NEW), v_ip, v_session);
+    RETURN NEW;
+  ELSIF TG_OP = 'INSERT' THEN
+    v_record_id := NEW.id;
+    INSERT INTO public.audit_log (table_name, record_id, action, changed_by, old_values, new_values, ip_address, session_id)
+    VALUES (TG_TABLE_NAME, v_record_id, 'INSERT', v_user_id, NULL, to_jsonb(NEW), v_ip, v_session);
+    RETURN NEW;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Apply audit triggers to all critical tables
+
+CREATE TRIGGER audit_columns
+  AFTER INSERT OR UPDATE OR DELETE ON public.columns
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_types
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_types
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_qualification
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_qualification
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_issuance
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_issuance
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_usage_log
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_usage_log
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_regeneration
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_regeneration
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_transfers
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_transfers
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_column_discard
+  AFTER INSERT OR UPDATE OR DELETE ON public.column_discard
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+CREATE TRIGGER audit_profiles
+  AFTER INSERT OR UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+-- ============================================================
+-- FUNCTION: Update cumulative injections on usage log insert
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.update_cumulative_injections()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Update cumulative_injections_after on the usage log
+  NEW.cumulative_injections_after := (
+    SELECT COALESCE(SUM(injections_in_session), 0)
+    FROM public.column_usage_log
+    WHERE column_id = NEW.column_id
+  ) + NEW.injections_in_session;
+
+  -- Update the columns table
+  UPDATE public.columns
+  SET
+    cumulative_injections = NEW.cumulative_injections_after,
+    last_used_date = NEW.usage_date,
+    first_use_date = CASE
+      WHEN first_use_date IS NULL THEN NEW.usage_date
+      ELSE first_use_date
+    END
+  WHERE id = NEW.column_id;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER trg_update_cumulative_injections
+  BEFORE INSERT ON public.column_usage_log
+  FOR EACH ROW EXECUTE FUNCTION public.update_cumulative_injections();
+
+-- ============================================================
+-- FUNCTION: Lock discarded columns from all modifications
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.prevent_discarded_column_edit()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF (SELECT status FROM public.columns WHERE id = NEW.column_id) = 'discarded' THEN
+    RAISE EXCEPTION 'Column % is discarded and cannot be modified.', NEW.column_id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_no_edit_discarded_usage
+  BEFORE INSERT ON public.column_usage_log
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_discarded_column_edit();
+
+CREATE TRIGGER trg_no_edit_discarded_regen
+  BEFORE INSERT ON public.column_regeneration
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_discarded_column_edit();
+
+CREATE TRIGGER trg_no_edit_discarded_transfer
+  BEFORE INSERT ON public.column_transfers
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_discarded_column_edit();
+
+-- ============================================================
+-- RPC HELPER: Set audit context (called from app before DML)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.set_audit_context(
+  p_user_id  TEXT,
+  p_session  TEXT DEFAULT '',
+  p_ip       TEXT DEFAULT ''
+)
+RETURNS VOID AS $$
+BEGIN
+  PERFORM set_config('app.user_id',    p_user_id, true);
+  PERFORM set_config('app.session_id', p_session, true);
+  PERFORM set_config('app.ip_address', p_ip,      true);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
